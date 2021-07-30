@@ -1,0 +1,706 @@
+---
+title: "SIPP Annual Unemployment Spell Incidence and Duration Estimates, 2013--2017"
+author: "Kelly Wilkin"
+date: "April 13, 2021"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library( tidyverse )
+library( glue )
+library( rlang )
+library( survey )
+library( lubridate )
+```
+
+```{r rel, include=FALSE, echo=FALSE}
+sipp_release = 7
+sipp_cy = 19
+sippcy_ref = glue( 'CY{sipp_cy}' )
+```
+
+```{r load-inputs, echo=FALSE, include=FALSE}
+# set working directory
+setwd( '' )
+
+
+# load user-defined functions
+fcnList = list( 'helperFunctions' , 'uec2014' , 'uec2018' , 'jobPanel' , 'spells2014' , 'jobMatch' )
+
+
+map( fcnList , ~ source( file.path( 'functions' , glue( '{.x}.R' ) ) ) )
+
+
+# load survey objects
+map( c( 1:4 , 18:20 ) %>% as.list() ,
+     function( x ) {
+       outNam = glue( 'svy{x}' )
+       
+       isNum = as.numeric( x )
+       
+       if ( !is.na( isNum ) ) {
+         if ( as.numeric( x ) < 18 ) {
+           svyOut = glue( 'sipp_2014_w{x}_svy.rds' )
+         } else {
+           svyOut = glue( 'sipp_2018_cy{x}_svy.rds' )
+         }
+       } else {
+         svyOut = glue( 'sipp_{x}.rds' )
+       }
+       
+       
+       sippsvy = readRDS( file.path( 'surveyObjects' , svyOut ) )
+       
+       assign( outNam , sippsvy , envir = .GlobalEnv )
+       
+     } )
+
+
+# associate calendar years with names of survey objects
+svyList = list( refyr = c( 2013:2019 ) ,
+                sfile = paste0( 'svy' , c( 1:4 , 18:20 ) ) ,
+                fnames = c( 2013:2019 ) )
+
+
+# define starting and ending periods for table titles
+fyear = svyList$refyr[[ 1 ]]
+lyear = svyList$refyr[[ length( svyList$refyr ) ]]
+```
+
+## Introduction
+
+SIPP was designed primarily as a complement to the Current Population Survey (CPS) to provide detailed estimates of household and personal income sources, but it also offers several advantages over existing data sources for the analysis of individual unemployment spells. Being longitudinal, it follows individuals and their weekly unemployment status for a continuous period of about four years, including if they move to other households and other geographic locations.\footnote{International moves, death, and institutionalization can take respondents out of the survey frame. some respondents may decide to refuse the survey between waves (i.e., unit non-response), which can affect the longitudinal sample. Longitudinal weighting accounts for changes in the sample over time.} The SIPP 2014 redesign introduced an "event history calendar" (EHC) to collect employment information. In addition to helping respondents with recall by associating their annual experience with milestones, it naturally records jobs as spells spanning continous time in the year. Naturally, any periods of non-employment (or "gaps" in employment) are recorded as spells. This has the advantage of making it easy to match jobless spells to employment on either boundary, allowing for analysis of job characteristics preceding or following non-employment. Job characteristics (e.g., lost job earnings) can be used as a proxy for the reservation wage, which affects job search behavior and stratgies. In addition, we record information about why a given job ended, which has been shown to greatly affect post-unemployment outcomes (e.g., duration, earnings). Such capability is offered by the CPS, for example, but often with additional assumptions, shorter "panels," and more periods of unobserved labor market activity.
+
+A necessary part of data review is verifying the sensibility of key measures, both with respect to external benchmark data collected over the same time period (e.g., CPS) and to data collected over different time periods within the same program. Large unexpected differences in estimates---or in the relationship(s) between estimates---could signal problems with data collection or editing processes. Ideally, Census could identify problems prior to data release. If not, however, knowing these details makes allows us to maintain awareness of how certain key measures might be affected and potentially motivate the creation of user notes to keep data users aware of potential issues.
+
+This document presents weighted annual estimates of the incidence and duration of unemployment spells in the SIPP 2014 panel and SIPP CY18 data. The data come from internal SIPP files released since the redesign in the 2014 panel, but all summary statistics are derived from public-use variables. Estimates are weighted using annual replicate weights.\footnote{The wave-specific replicate weight files include person-month weights. For annual weights, we restrict the sample to those respondents who have non-zero (or non-missing) replicate weights for \texttt{monthcode}$ = 12$.} Standard errors are not reported.
+
+The document is organized as follows. Start with a summary of incidence and duration of unemployment spells by censoring status. Expect a high incidence of right and left censoring since we ignore the longitudinal design. Maximum spell durations are capped at 52 weeks by construction. We then present information on the distribution of unemployment by demographics, educational attainment, and marital status. We then examine the distribution of spells by short, medium, and long-term unemployment. Then we look at unemployment insurance (UI) compensation take-up and its relationship to the duration distribution. Finally, we present statistics on the incidence and duration of unemployment spells by reason for unemployment, which classifies unemployed workers as either job leavers, job losers, or new/re-entrants.
+
+## Incidence and Duration by Censoring Status
+
+```{r censoring, echo=FALSE, include=FALSE}
+censoringList = list( conds = c( 'usplc == 1 & uspic == 0 & usprc == 0' ,
+                                 'usplc == 0 & uspic == 1 & usprc == 0' ,
+                                 'usplc == 0 & uspic == 0 & usprc == 1' ,
+                                 '( usplc + uspic + usprc ) > 1' ,
+                                 'usplc == 1 & uspic == 0 & usprc == 1' ) ,
+                      labels = c( 'Left-censored only' ,
+                                  'Interval-censored only' ,
+                                  'Right-censored only' ,
+                                  'Multiple censoring types' ,
+                                  'Completely censored' ) )
+
+
+censoringTable = 
+  do.call( rbind , 
+           map2( svyList$refyr ,
+                 svyList$sfile ,
+                 function( .p , .q ) {
+                   sumStats( subset( eval( parse( text = .q ) ) , between( EAGE , 18 , 65 ) ) ,
+                             'uspst == 1' , 'uspdur' , 'Total' ,  'uspst == 1' ) %>%
+                     bind_rows( . , sumStats( subset( eval( parse( text = .q ) ) , 
+                                                      between( EAGE , 18 , 65 ) ) ,
+                                              'uspst == 1' , 'uspdur' , 'Complete' , 'uspcen == 0' ) ) %>%
+                     bind_rows( . , sumStats( subset( eval( parse( text = .q ) ) , 
+                                                      between( EAGE , 18 , 65 ) ) , 
+                                              'uspst == 1' , 'uspdur' , 'Censored' , 'uspcen == 1' ) ) %>%
+                     bind_rows( . , 
+                                do.call( rbind ,
+                                         map2( censoringList$labels ,
+                                               censoringList$conds ,
+                                               ~ sumStats( svyObject = subset( eval( parse( text = .q ) ) , 
+                                                                               between( EAGE , 18 , 65 ) ) , 
+                                                           baseCond = 'uspcen == 1' , 
+                                                           durVar = 'uspdur' , 
+                                                           statLabel = .x , 
+                                                           statCond = .y ) ) ) ) %>%
+                     mutate( refyr = .p )
+                 } ) )
+
+
+censoring_groups = c( 'Total' , 'Complete' , 'Censored' , 'Left-censored only' , 'Right-censored only' ,
+                      'Completely censored' )
+
+
+spellSample =
+  bind_cols( censoringTable %>%
+               select( group ) %>%
+               filter( group %in% censoring_groups ) %>%
+               distinct() %>%
+               mutate( group = ifelse( group %in% c( 'Left-censored only' ,
+                                                     'Right-censored only' ,
+                                                     'Completely censored' ) ,
+                                       paste0( '\\hspace{16pt}' , group ) ,
+                                       ifelse( group == 'Total' ,
+                                               group ,
+                                               paste0( '\\hspace{8pt}' , group ) ) ) ) ,
+             do.call( cbind ,
+                      map( svyList$refyr %>% as.list() ,
+                           function( x )
+                             censoringTable %>%
+                             filter( refyr == x & group %in% censoring_groups ) %>%
+                             select( obs ) %>%
+                             mutate( '{x}' := obs ) %>%
+                             select( - obs ) ) ) )
+
+spellIncidence =
+  bind_cols( censoringTable %>%
+               select( group ) %>%
+               filter( group %in% censoring_groups ) %>%
+               distinct() %>%
+               mutate( group = ifelse( group %in% c( 'Left-censored only' ,
+                                                     'Right-censored only' ,
+                                                     'Completely censored' ) ,
+                                       paste0( '\\hspace{16pt}' , group ) ,
+                                       ifelse( group == 'Total' ,
+                                               group ,
+                                               paste0( '\\hspace{8pt}' , group ) ) ) ) ,
+             do.call( cbind ,
+                      map( svyList$refyr %>% as.list() ,
+                           function( x )
+                             censoringTable %>%
+                             filter( refyr == x & group %in% censoring_groups ) %>%
+                             select( spells ) %>%
+                             mutate( '{x}' := spells / 1000000 ) %>%
+                             select( - spells ) ) ) )
+
+spellDuration = 
+  bind_cols( censoringTable %>%
+               select( group ) %>%
+               filter( group %in% censoring_groups ) %>%
+               distinct() %>%
+               mutate( group = ifelse( group %in% c( 'Left-censored only' ,
+                                                     'Right-censored only' ,
+                                                     'Completely censored' ) ,
+                                       paste0( '\\hspace{16pt}' , group ) ,
+                                       ifelse( group == 'Total' ,
+                                               group ,
+                                               paste0( '\\hspace{8pt}' , group ) ) ) ) ,
+             do.call( cbind ,
+                      map( svyList$refyr %>% as.list() ,
+                           function( x )
+                             censoringTable %>%
+                             filter( refyr == x & group %in% censoring_groups ) %>%
+                             select( duration ) %>%
+                             mutate( '{x}' := duration ) %>%
+                             select( - duration ) ) ) )
+
+names( spellSample ) = c( 'group' , svyList$fnames )
+names( spellIncidence ) = c( 'group' , svyList$fnames )
+names( spellDuration ) = c( 'group' , svyList$fnames )
+```
+
+This section starts with a basic summary of the incidence of unemployment by censoring status for each reference year. Table \ref{tab:censoring-incidence} presents the unweighted count of spells for each censoring status. Total spells comprise either completed spells or censoring spells. Censored spells may be left-censored only, right-censored only, or some combination thereof to include complete censoring where a given respondent maintains an unemployment status for the entire reference period. The \texttt{group} field in each table reflects the specific subsample, and the indentation pattern reflects the nesting structure. The sum of censored spells by sub-type may not equal the total censored because some combinations were omitted to keep the table simple.\footnote{The spell-identification routine relies on weekly employment status recodes (WKESR) to set labor market status in a given week. Prior to this, all imputed jobs are deleted as a pre-processing step. This could create scenarios where the months associated with an imputed job are deleted, leaving gaps in time for the reference year. If the respondent was unemployed in one or more periods bounding the imputed (and deleted) job spell, then these gaps will effectively represent periods of unknown labor market status. Spells with discontinuities in calendar time are also classified as censored (i.e., we can identify a U spell but there is a gap in time within that U spell); I classify these as "interval" censored. This censoring status happens rarely but may account for one source of censoring not reported in the tables and the reason for nested totals not summing.} The "completely censored" category omits spells with interval censoring.
+
+
+```{r spell-sample, echo=FALSE, include=TRUE}
+knitr::kable( spellSample , 
+              format.args = list( big.mark = "," ) ,
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Incidence of Unemployment Spells by Censoring Status, {fyear}--{lyear}' ) , '\\label{tab:spell-sample}' ) )
+```
+
+Table \ref{tab:censoring-incidence} presents the same unemployment spell incidence measures weighted by calendar-year replicate weights as discussed in the introduction. Each figure refers to millions of unemployment spells. Weighted totals by nested group may not sum due to rounding.
+
+```{r censoring-incidence, echo=FALSE, include=TRUE}
+knitr::kable( spellIncidence , 
+              digits = 1 , 
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Incidence of Unemployment Spells by Censoring Status (in millions), 2013--2019' ) , '\\label{tab:censoring-incidence}' ) )
+```
+
+Table \ref{tab:censoring-duration} shows the weighted average duration (in weeks) of unemployment spells by censoring status.
+
+```{r censoring-duration, echo=FALSE, include=TRUE}
+knitr::kable( spellDuration , 
+              digits = 1 ,
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Average Duration of Unemployment Spells by Censoring Status (in weeks), {fyear}--{lyear}' ) , '\\label{tab:censoring-duration}' ) )
+```
+
+For reference, Table \ref{tab:censoring-conds} shows the specific conditional statements used to subset each sample presented in this section. Variable references are specific to the unemployment spell microdata files (available upon request). Completed spells (not shows in the table) are those where all censoring indicators are equal to zero. For the remaining tables presented in this document, duration statistics will be restricted to the set of completed spells.\footnote{This is something that can change as this document progresses.}
+
+```{r censoring-conds, echo=FALSE, include=TRUE}
+knitr::kable( tibble( label = censoringList$labels ) %>% 
+                bind_cols( . , 
+                           tibble( condition = censoringList$conds ) ) , 
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Conditional Statements for Subsetting Unemployment Spells Sample by Censoring Status' ) , '\\label{tab:censoring-conds}' ) )
+```
+
+## Demographic Characteristics of the Unemployed
+
+```{r demo, echo=FALSE, message=FALSE, warning=FALSE}
+demoList = list( labels = c( 'men' , 'women' , 'age 18--24' , 'age 25--34' , 'age 35--49' , 'age 50+' ,
+                             'married' , 'divorced/separated/widowed' , 'never married' , 
+                             'white alone' , 'black alone' , 'asian alone' , 'other alone' , 'hispanic' ,
+                             'less than high school' , 'high school or equivalent' , 'some college' , 
+                             'associate\'s degree' , 'bachelor\'s degree or higher' ) ,
+                 conds = c( 'ESEX == 1' , 'ESEX == 2' , 
+                            'EAGE <= 24' , 'between( EAGE , 25 , 34 )' , 'between( EAGE , 35 , 49 )' , 
+                            'EAGE >= 50' , 'EMS %in% c( 1:2 )' , 'EMS %in% c( 3:5 )' , 'EMS == 6' ,
+                            'ERACE == 1 & hispanic == 0' , 'ERACE == 2 & hispanic == 0' , 
+                            'ERACE == 3 & hispanic == 0' , 'ERACE == 4 & hispanic == 0' , 'hispanic == 1' ,
+                            'between( EEDUC , 31 , 38 )' , 'EEDUC == 39' , 'between( EEDUC , 40 , 41 )' ,
+                            'EEDUC == 42' , 'EEDUC >= 43' ) )
+
+demoTableAll = 
+  do.call( rbind , 
+           map2( svyList$refyr ,
+                 svyList$sfile ,
+                 function( .p , .q ) {
+                   do.call( rbind ,
+                            map2( demoList$labels ,
+                                  demoList$conds ,
+                                  ~ sumStats( svyObject = eval( parse( text = .q ) ) , 
+                                              baseCond = 'between( EAGE , 18 , 65 )' , 
+                                              durVar = 'uspdur' , 
+                                              statLabel = .x , 
+                                              statCond = .y ,
+                                              statBase = 'between( EAGE , 18 , 65 )' ) %>%
+                                    mutate( refyr = .p ) ) )
+                 } ) )
+
+
+demoTableComp = 
+  do.call( rbind , 
+           map2( svyList$refyr ,
+                 svyList$sfile ,
+                 function( .p , .q ) {
+                   do.call( rbind ,
+                            map2( demoList$labels ,
+                                  demoList$conds ,
+                                  ~ sumStats( svyObject = eval( parse( text = .q ) ) , 
+                                              baseCond = 'uspcen == 0 & between( EAGE , 18 , 65 )' , 
+                                              durVar = 'uspdur' , 
+                                              statLabel = .x , 
+                                              statCond = .y ,
+                                              statBase = 'uspcen == 0 & between( EAGE , 18 , 65 )' ) %>%
+                                    mutate( refyr = .p ) ) )
+                 } ) )
+
+
+demoIncidenceAll =
+  bind_cols( demoTableAll %>%
+               select( group ) %>%
+               distinct() ,
+             do.call( cbind ,
+                      map( svyList$refyr %>% as.list() ,
+                           function( x )
+                             demoTableAll %>%
+                               filter( refyr == x ) %>%
+                               select( sharesp ) %>%
+                               mutate( '{x}' := sharesp ) %>%
+                               select( - sharesp ) ) ) )
+
+
+demoIncidenceComp = 
+  bind_cols( demoTableComp %>%
+               select( group ) %>%
+               distinct() ,
+             do.call( cbind ,
+                      map( svyList$refyr %>% as.list() ,
+                           function( x )
+                             demoTableComp %>%
+                               filter( refyr == x ) %>%
+                               select( sharesp ) %>%
+                               mutate( '{x}' := sharesp ) %>%
+                               select( - sharesp ) ) ) )
+
+
+demoDuration = 
+  bind_cols( demoTableComp %>%
+               select( group ) %>%
+               distinct() ,
+             do.call( cbind ,
+                      map( svyList$refyr %>% as.list() ,
+                           function( x )
+                             demoTableComp %>%
+                               filter( refyr == x ) %>%
+                               select( duration ) %>%
+                               mutate( '{x}' := duration ) %>%
+                               select( - duration ) ) ) )
+
+
+names( demoIncidenceAll ) = c( 'group' , svyList$fnames )
+names( demoIncidenceComp ) = c( 'group' , svyList$fnames )
+names( demoDuration ) = c( 'group' , svyList$fnames )
+```
+
+This section presents statistics about the distribution of unemployment spells by demographics (sex, age, race and ethnicity\footnote{The Hispanic category may include one or more races.}), educational attainment, and marital status. All estimates are weighted.
+
+Table \ref{tab:demoincidence-all} presents estimates for the share of all unemployment spells by group. Table \ref{tab:demoincidence-comp} presents the same estimates for the sample of completed spells only. Table \ref{tab:demoduration} presents estimates of the average duration of completed spells by each category.
+
+```{r demoincidence-all , echo=FALSE, include=TRUE}
+knitr::kable( demoIncidenceAll , 
+              digits = 2 , 
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Share of Total Unemployment Spells by Demographics, Educational Attainment, and Marital Status, {fyear}--{lyear}' ) , '\\label{tab:demoincidence-all}' ) )
+
+```
+```{r demoincidence-comp , echo=FALSE, include=TRUE}
+knitr::kable( demoIncidenceComp , 
+              digits = 2 , 
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Share of Completed Unemployment Spells by Demographics, Educational Attainment, and Marital Status, {fyear}--{lyear}' ) , '\\label{tab:demoincidence-comp}' ) )
+
+```
+
+```{r demoduration , echo=FALSE, include=TRUE}
+knitr::kable( demoDuration, 
+              digits = 1 , 
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Average Duration (in weeks) of Completed Unemployment Spells by Demographics, Educational Attainment, and Marital Status, {fyear}--{lyear}' ) , '\\label{tab:demoduration}' ) )
+
+```
+
+## Duration Distribution for Completed Spells
+
+```{r duration, echo=FALSE, message=FALSE, warning=FALSE}
+durList = list( labels = c( '1--4 weeks' , '5--14 weeks' , '15--26 weeks' , '27--52 weeks' ) ,
+                conds = c( 'between( uspdur , 1 , 4 )' ,
+                           'between( uspdur , 5 , 14 )' ,
+                           'between( uspdur , 15 , 26 )' ,
+                           'between( uspdur , 27 , 52 )' ) )
+
+durTable = 
+  do.call( rbind , 
+           map2( svyList$refyr ,
+                 svyList$sfile ,
+                 function( .p , .q ) {
+                   do.call( rbind ,
+                            map2( durList$labels ,
+                                  durList$conds ,
+                                  ~ sumStats( svyObject = eval( parse( text = .q ) ) , 
+                                              baseCond = 'uspcen == 0 & between( EAGE , 18 , 65 )' , 
+                                              durVar = 'uspdur' , 
+                                              statLabel = .x , 
+                                              statCond = .y ,
+                                              statBase = 'uspcen == 0 & between( EAGE , 18 , 65 )' ) %>%
+                                    mutate( refyr = .p ) ) )
+                 } ) )
+
+
+uspExitsByDur = 
+  do.call( rbind , 
+           map2( svyList$refyr ,
+                 svyList$sfile ,
+                 function( .p , .q ) {
+                   do.call( rbind , 
+                            map2( durList$labels , 
+                                  durList$conds ,
+                                  function( x , y )
+                                    do.call( rbind , 
+                                             map( list( 'uspue' , 'uspun' ) ,
+                                                  ~ sumStats( svyObject = subset( eval( parse( text = .q ) ) , 
+                                                                                  between( EAGE , 18 , 65 ) ) ,
+                                                              baseCond = glue( 'uspcen == 0 & {y}' ) ,
+                                                              durVar = 'uspdur' ,
+                                                              statLabel = glue( '{x}' ) ,
+                                                              statCond = .x ,
+                                                              statBase = glue( 'uspcen == 0 & {y}' ) ) %>%
+                                                    mutate( exit = .x ,
+                                                            idnum = which( durList$labels == x ) ,
+                                                            refyr = .p ) ) ) ) )
+                 } ) )
+
+durDist =
+  bind_cols( durTable %>%
+               select( group ) %>%
+               distinct() ,
+             do.call( cbind ,
+                      map( svyList$refyr %>% as.list() ,
+                           function( x )
+                             durTable %>%
+                               filter( refyr == x ) %>%
+                               select( sharesp ) %>%
+                               mutate( '{x}' := sharesp ) %>%
+                               select( - sharesp ) ) ) )
+
+durExit =
+  bind_cols( uspExitsByDur %>%
+               select( group ) %>%
+               distinct() ,
+             do.call( cbind ,
+                      map( svyList$refyr %>% as.list() ,
+                           function( x )
+                             uspExitsByDur %>%
+                               filter( refyr == x & exit == 'uspue' ) %>%
+                               select( sharesp ) %>%
+                               mutate( '{x}' := sharesp ) %>%
+                               select( - sharesp ) ) ) )
+
+names( durDist ) = c( 'group' , svyList$fnames )
+names( durExit ) = c( 'group' , svyList$fnames )
+```
+
+Table \ref{tab:duration-dist} shows for each reference period the distribution of completed spells by broad duration categories: short-term (14 weeks or less), medium-term (15--26 weeks), and long-term (27 or more weeks).
+
+```{r duration-dist , echo=FALSE, include=TRUE}
+knitr::kable( durDist, 
+              digits = 2 , 
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Share of Completed Unemployment Spells by Duration Category, {fyear}--{lyear}' ) , '\\label{tab:duration-dist}' ) )
+
+```
+
+A well-known feature of the U.S. labor market is negative duration dependence, or the probability an unemployment spell ends declines with its duration. Table \ref{tab:duration-exit} shows the share of spells within a duration category that end in employment.\footnote{The complement of reported shares end in non-participation.}
+
+```{r duration-exit , echo=FALSE, include=TRUE}
+knitr::kable( durExit, 
+              digits = 2 , 
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Share of Completed Unemployment Spells Ending in Employment, {fyear}--{lyear}' ) , '\\label{tab:duration-exit}' ) )
+```
+
+## Unemployment Compensation Take-Up and Spell Duration
+```{r ui, echo=FALSE, include=FALSE}
+# full sample
+durUIall = 
+  do.call( rbind , 
+           map2( svyList$refyr ,
+                 svyList$sfile ,
+                 function( .p , .q ) {
+                   do.call( rbind ,
+                            map2( durList$labels ,
+                                  durList$conds ,
+                                  function( x , y )
+                                    do.call( rbind ,
+                                             map2( list( 'ui' , 'noui' ) ,
+                                                   list( 'huec1' , '!huec1' ) ,
+                                                   ~ sumStats( svyObject = 
+                                                                 subset( eval( parse( text = .q ) ) , 
+                                                                         between( EAGE , 18 , 65 ) ) , 
+                                                               baseCond = glue( '{y}' ) , 
+                                                               durVar = 'uspdur' , 
+                                                               statLabel = x , 
+                                                               statCond = .y , 
+                                                               statBase = glue( '{y}' ) ) %>%
+                                                     mutate( ui = .x ,
+                                                             refyr = .p ) ) ) ) )
+                 } ) )
+
+# experienced sample (u spells with an observed prior job)
+durUIexp =
+  do.call( rbind , 
+           map2( svyList$refyr ,
+                 svyList$sfile ,
+                 function( .p , .q ) {
+                   do.call( rbind ,
+                            map2( durList$labels ,
+                                  durList$conds ,
+                                  function( x , y )
+                                    do.call( rbind ,
+                                             map2( list( 'ui' , 'noui' ) ,
+                                                   list( 'huec1' , '!huec1' ) ,
+                                                   ~ sumStats( svyObject = 
+                                                                 subset( eval( parse( text = .q ) ) ,
+                                                                         between( EAGE , 18 , 65 ) & 
+                                                                           !is.na( lj_jMatches ) & lj_jMatches > 0 ) , 
+                                                               baseCond = glue( '{y}' ) , 
+                                                               durVar = 'uspdur' , 
+                                                               statLabel = x , 
+                                                               statCond = .y , 
+                                                               statBase = glue( '{y}' ) ) %>%
+                                                     mutate( ui = .x ,
+                                                             refyr = .p ) ) ) ) )
+                 } ) )
+
+uiAll =
+  bind_cols( durUIall %>%
+               select( group ) %>%
+               distinct() ,
+             do.call( cbind ,
+                      map( svyList$refyr %>% as.list() ,
+                           function( x )
+                             durUIall %>%
+                               filter( refyr == x & ui == 'ui' ) %>%
+                               select( sharesp ) %>%
+                               mutate( '{x}' := sharesp ) %>%
+                               select( - sharesp ) ) ) )
+
+uiExp =
+  bind_cols( durUIexp %>%
+               select( group ) %>%
+               distinct() ,
+             do.call( cbind ,
+                      map( svyList$refyr %>% as.list() ,
+                           function( x )
+                             durUIexp %>%
+                               filter( refyr == x & ui == 'ui' ) %>%
+                               select( sharesp ) %>%
+                               mutate( '{x}' := sharesp ) %>%
+                               select( - sharesp ) ) ) )
+
+names( uiAll ) = c( 'group' , svyList$fnames )
+names( uiExp ) = c( 'group' , svyList$fnames )
+```
+
+This section examines the relationship between unemployment duration and unemployment insurance (UI) take-up in each reference year. Receipt of UI is a month-level variable, while unemployment spells are identified weekly. We classify UI take-up as any unemployment spell that overlaps one or more months where UI compensation was received. UI is linked to unemployment duration. Benefits are capped to a duration (typically 26 weeks, with some states allowing benefits for 39 weeks); in periods of high aggregate unemployment, benefit durations may be extended on an emergency basis. During the Great Recession, for example, UI benefit durations were extended to 99 weeks. To the extent that UI benefits meet or exceed a worker's lost earnings, the UI system itself may affect individual search strategies and the probability of leaving unemplmoyment.
+
+Given the short time period representing each reference year, the sample is based on all spells (censoring and complete). However, the UI system, which is administered by states but co-funded by the federal government, typically requires some previous employment with active job search to qualify for UI compensation.\footnote{The UI system is complicated and this is doubtless an over-generalization. For our purposes, we ignore state-level differences in UI benefit eligibility, generosity, and duration.} Table \ref{tab:ui-all} shows the share of UI take-up within each duration category. Table \ref{tab:ui-exp} shows UI take-up rates for the subsample of unemployment spells for individuals with some observed prior employment; we casually refer to this sample as the "experienced" unemployed.
+
+```{r ui-all, echo=FALSE, include=TRUE}
+knitr::kable( uiAll, 
+              digits = 2 , 
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Share of Total Unemployment Spells with Unemployment Insurance (UI) Receipt by Duration Category, {fyear}--{lyear}' ) , '\\label{tab:ui-all}' ) )
+```
+
+```{r ui-exp, echo=FALSE, include=TRUE}
+knitr::kable( uiExp, 
+              digits = 2 , 
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Share of Experienced Unemployment Spells with Unemployment Insurance (UI) Receipt by Duration Category, {fyear}--{lyear}' ) , '\\label{tab:ui-exp}' ) )
+```
+
+## Reason for Unemployment
+
+```{r u-reason, echo=FALSE, message=FALSE, warning=FALSE}
+uReason = 
+  do.call( rbind , 
+           map2( svyList$refyr ,
+                 svyList$sfile ,
+                 function( .p , .q ) {
+                   do.call( rbind ,
+                            map2( c( 1:3 ) %>% as.list() ,
+                                  list( 'job leavers' , 'job losers' , 'new/reentrants' ) ,
+                                  ~ sumStats( svyObject = eval( parse( text = .q ) ) , 
+                                              baseCond = '!is.na( uType ) & uType > 0' , 
+                                              durVar = 'uspdur' , 
+                                              statLabel = .y , 
+                                              statCond = glue( 'uType == {.x}' ) ,
+                                              statBase = '!is.na( uType ) & uType > 0' ) %>%
+                                    mutate( uType = .x ,
+                                            refyr = .p ) ) )
+                 } ) )
+
+
+uReasonDetail = 
+  do.call( rbind , 
+           map2( svyList$refyr ,
+                 svyList$sfile ,
+                 function( .p , .q ) {
+                   do.call( rbind ,
+                            map( c( 1:3 ) %>% as.list() ,
+                                 function( x ) {
+                                   if ( x == 1 ) {
+                                     subList = list( 11 , 12 )
+                                     subDesc = list( 'quits' , 'other leaver' )
+                                   } else if ( x == 2 ) {
+                                     subList = list( 21 , 24 , 22 , 23 )
+                                     subDesc = list( 'temp layoff' , 'displacement' , 
+                                                     'temporary job ended' , 
+                                                     'other involuntary separation' )
+                                   } else {
+                                     subList = list( 31 , 32 )
+                                     subDesc = list( 'job before labor force exit' , 
+                                                     'no job before labor force exit' )
+                                   }
+                                   
+                                   return( do.call( rbind ,
+                                                    map2( subList ,
+                                                          subDesc ,
+                                                          ~ sumStats( svyObject = 
+                                                                        eval( parse( text = .q ) ) , 
+                                                                      baseCond = 
+                                                                        glue( '!is.na( uType ) & uType > 0' ) , 
+                                                                      durVar = 'uspdur' , 
+                                                                      statLabel = .y , 
+                                                                      statCond = glue( 'usType == {.x}' ) ,
+                                                                      statBase = 
+                                                                        glue( '!is.na( uType ) & uType > 0' ) ) %>%
+                                                            mutate( uType = x ,
+                                                                    refyr = .p ) ) ) )
+                                   
+                                 } ) )
+                 } ) )
+
+
+uReasonNest = 
+  do.call( rbind ,
+           map( svyList$refyr ,
+                function( x ) {
+                  do.call( rbind ,
+                           map( c( 1:3 ) %>% as.list() ,
+                                ~ bind_rows( uReason %>% 
+                                               filter( refyr == x & uType == .x ) %>%
+                                               select( -uType ) ,
+                                             uReasonDetail %>%
+                                               filter( refyr == x & uType == .x ) %>%
+                                               select( -uType ) ) ) )
+                } ) )
+
+uReasonTable =
+  bind_cols( uReasonNest %>%
+               select( group ) %>%
+               distinct() %>%
+               mutate( group = ifelse( group %in% c( 'job leavers' , 'job losers' , 'new/reentrants' ) ,
+                                       group ,
+                                       paste0( '\\hspace{8pt}' , group ) ) ) ,
+             do.call( cbind ,
+                      map( svyList$refyr %>% as.list() ,
+                           function( x )
+                             uReasonNest %>%
+                               filter( refyr == x ) %>%
+                               select( sharesp ) %>%
+                               mutate( '{x}' := sharesp ) %>%
+                               select( - sharesp ) ) ) )
+
+uReasonDur =
+  bind_cols( uReasonNest %>%
+               select( group ) %>%
+               distinct() %>%
+               mutate( group = ifelse( group %in% c( 'job leavers' , 'job losers' , 'new/reentrants' ) ,
+                                       group ,
+                                       paste0( '\\hspace{8pt}' , group ) ) ) ,
+             do.call( cbind ,
+                      map( svyList$refyr %>% as.list() ,
+                           function( x )
+                             uReasonNest %>%
+                               filter( refyr == x ) %>%
+                               select( duration ) %>%
+                               mutate( '{x}' := duration ) %>%
+                               select( - duration ) ) ) )
+
+names( uReasonDur ) = c( 'group' , svyList$fnames )
+names( uReasonTable ) = c( 'group' , svyList$fnames )
+```
+
+This section examines the incidence and duration of unemployment by reason for unemployment. From the perspective of the worker, individuals enter unemployment through a voluntary job separation ("job leavers"), an involuntary job separation ("job losers"), or newly entering (e.g., first job out of school) or re-entering to the labor force. We use a combination of WKESR$i$ (for $i=1,\dots,5$), no-jobs variables (e.g., LAYOFF, LAYOTYP, NOWRK), and RSEND to classify unemployment spells into these three broad categories. In addition, the same variables allow us to break down reasons into more detailed sub-categories.\footnote{There are some unique sample limitations regarding censoring and prior employment that determine whether a reason can be established. In a follow-up draft of this, I will expound on these sample restrictions in more detail.}
+
+Table \ref{tab:ureason-incidence} shows the share of unemployment spells represented by each reason for unemployment. As with previous tables, the indentation pattern reflects the nesting of detailed reasons within broader categories.
+
+```{r ureason-incidence, echo=FALSE, include=TRUE}
+knitr::kable( uReasonTable, 
+              digits = 2 , 
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Share of Unemployment Spells by Reason for Unemployment, {fyear}--{lyear}' ) , '\\label{tab:ureason-incidence}' ) )
+```
+
+The unemployment experience of workers has been shown to vary by the reason for unemployment. Table \ref{tab:ureason-duration} presents the average duration of unemployment by reason for unemployment.
+
+```{r ureason-duration, echo=FALSE, include=TRUE}
+knitr::kable( uReasonDur, 
+              digits = 1 , 
+              format = 'pandoc' ,
+              caption = 
+                paste0( glue( 'Average Duration of Unemployment (in weeks) by Reason for Unemployment, {fyear}--{lyear}' ) , '\\label{tab:ureason-duration}' ) )
+```
