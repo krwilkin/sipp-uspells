@@ -1,0 +1,2 @@
+# sipp-uspells
+Presents a summary of unemployment spell data from the Survey of Income and Program Participation (SIPP) in a RMarkdown file. Annual replicate-weighted estimates for the reference period 2013--2017 are presented. Assumes that SIPP monthly data have been converted into unemployment spells and a "survey" object (using the R `survey` package) has been created and saved as a .rds file on disk.
